@@ -14,11 +14,23 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <arch/options.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <libfdt.h>
+#include <arch/options.h>
 #include "../../kexec.h"
 #include "../../kexec-syscall.h"
 #include "crashdump-arm.h"
+#include "../../fs2dt.h"
+#include "mach.h"
 
 #define BOOT_PARAMS_SIZE 1536
+
+off_t initrd_base = 0, initrd_size = 0;
+char *atags_file = NULL;
+unsigned int kexec_arm_image_size = 0;
+unsigned long long user_page_offset = (-1ULL);
 
 struct tag_header {
 	uint32_t size;
@@ -83,10 +95,10 @@ struct tag {
 
 int zImage_arm_probe(const char *UNUSED(buf), off_t UNUSED(len))
 {
-	/* 
+	/*
 	 * Only zImage loading is supported. Do not check if
 	 * the buffer is valid kernel image
-	 */	
+	 */
 	return 0;
 }
 
@@ -96,38 +108,74 @@ void zImage_arm_usage(void)
 		"     --append=STRING       Set the kernel command line to STRING.\n"
 		"     --initrd=FILE         Use FILE as the kernel's initial ramdisk.\n"
 		"     --ramdisk=FILE        Use FILE as the kernel's initial ramdisk.\n"
+		"     --dtb(=dtb.img)       Load dtb from zImage, dtb.img or /proc/device-tree instead of using atags.\n"
+		"                           DTB appended to zImage and dtb.img currently only works on MSM devices.\n"
+		"     --boardname=NAME      Required if using DTB. Options: hammerhead bacon d851 shamu\n"
+		"     --rd-addr=<addr>      Address to load initrd to.\n"
+		"     --atags-addr=<addr>   Address to load atags/dtb to.\n"
+		"     --atags               Use ATAGs instead of device-tree.\n"
+		"     --atags-file=FILE     Use FILE as ATAGs.\n"
+		"     --page-offset=PAGE_OFFSET\n"
+		"                           Set PAGE_OFFSET of crash dump vmcore\n"
 		);
 }
 
 static
 struct tag * atag_read_tags(void)
 {
-	static unsigned long buf[BOOT_PARAMS_SIZE];
+	unsigned long buf[1024];
+	unsigned long *tags = NULL;
+	ssize_t size = 0, read_b;
 	const char fn[]= "/proc/atags";
-	FILE *fp;
-	fp = fopen(fn, "r");
-	if (!fp) {
-		fprintf(stderr, "Cannot open %s: %s\n", 
+	int fd = open(fn, O_RDONLY);
+	if (fd == -1) {
+		fprintf(stderr, "Cannot open %s: %s\n",
 			fn, strerror(errno));
 		return NULL;
 	}
 
-	if (!fread(buf, sizeof(buf[1]), BOOT_PARAMS_SIZE, fp)) {
-		fclose(fp);
-		return NULL;
+	do {
+		read_b = read(fd, buf, sizeof(buf));
+		if(read_b == -1) {
+			fprintf(stderr, "Cannot read %s: %s\n", fn, strerror(errno));
+			goto fail;
+		}
+
+		tags = realloc(tags, (size+read_b));
+		memcpy(((char*)tags) + size, buf, read_b);
+		size += read_b;
+	} while(read_b != 0);
+
+	if (size == 0) {
+		fprintf(stderr, "Read 0 atags bytes: %s\n", fn);
+		goto fail;
 	}
 
-	if (ferror(fp)) {
-		fprintf(stderr, "Cannot read %s: %s\n",
-			fn, strerror(errno));
-		fclose(fp);
-		return NULL;
-	}
-
-	fclose(fp);
-	return (struct tag *) buf;
+	goto exit;
+fail:
+	free(tags);
+	tags = NULL;
+exit:
+	close(fd);
+	return (struct tag *) tags;
 }
 
+static
+void tag_buf_add(struct tag *t, char **buf, size_t *size)
+{
+	*buf = xrealloc(*buf, (*size) + byte_size(t));
+	memcpy((*buf) + (*size), t, byte_size(t));
+	*size += byte_size(t);
+}
+
+static
+uint32_t *tag_buf_find_initrd_start(struct tag *buf)
+{
+	for(; byte_size(buf); buf = tag_next(buf))
+		if(buf->hdr.tag == ATAG_INITRD2)
+			return &buf->u.initrd.start;
+	return NULL;
+}
 
 static
 int atag_arm_load(struct kexec_info *info, unsigned long base,
@@ -135,14 +183,15 @@ int atag_arm_load(struct kexec_info *info, unsigned long base,
 	const char *initrd, off_t initrd_len, off_t initrd_off)
 {
 	struct tag *saved_tags = atag_read_tags();
-	char *buf;
-	off_t len;
-	struct tag *params;
+	char *buf = NULL;
+	size_t buf_size = 0;
+	struct tag *params, *tag;
 	uint32_t *initrd_start = NULL;
-	
-	buf = xmalloc(getpagesize());
-	if (!buf) {
+
+	params = xmalloc(getpagesize());
+	if (!params) {
 		fprintf(stderr, "Compiling ATAGs: out of memory\n");
+		free(saved_tags);
 		return -1;
 	}
 
@@ -165,20 +214,25 @@ int atag_arm_load(struct kexec_info *info, unsigned long base,
 				memcpy(params, saved_tags, byte_size(saved_tags));
 				params = tag_next(params);
 			}
-			saved_tags = tag_next(saved_tags);
+			tag = tag_next(tag);
 		}
+		free(saved_tags);
 	} else {
 		params->hdr.size = 2;
 		params->hdr.tag = ATAG_CORE;
-		params = tag_next(params);
+		tag_buf_add(params, &buf, &buf_size);
+		memset(params, 0xff, byte_size(params));
 	}
 
 	if (initrd) {
+		printf("Adding initrd...\n");
 		params->hdr.size = tag_size(tag_initrd);
 		params->hdr.tag = ATAG_INITRD2;
 		initrd_start = &params->u.initrd.start;
 		params->u.initrd.size = initrd_len;
-		params = tag_next(params);
+
+		tag_buf_add(params, &buf, &buf_size);
+		memset(params, 0xff, byte_size(params));
 	}
 
 	if (command_line) {
@@ -187,17 +241,27 @@ int atag_arm_load(struct kexec_info *info, unsigned long base,
 		memcpy(params->u.cmdline.cmdline, command_line,
 			command_line_len);
 		params->u.cmdline.cmdline[command_line_len - 1] = '\0';
-		params = tag_next(params);
+
+		tag_buf_add(params, &buf, &buf_size);
+		memset(params, 0xff, byte_size(params));
 	}
 
 	params->hdr.size = 0;
 	params->hdr.tag = ATAG_NONE;
+	tag_buf_add(params, &buf, &buf_size);
 
-	len = ((char *)params - buf) + sizeof(struct tag_header);
+	free(params);
 
-	add_segment(info, buf, len, base, len);
+	add_segment(info, buf, buf_size, base, buf_size);
 
 	if (initrd) {
+		initrd_start = tag_buf_find_initrd_start((struct tag *)buf);
+		if(!initrd_start)
+		{
+			fprintf(stderr, "Failed to find initrd start!\n");
+			return -1;
+		}
+
 		*initrd_start = locate_hole(info, initrd_len, getpagesize(),
 				initrd_off, ULONG_MAX, INT_MAX);
 		if (*initrd_start == ULONG_MAX)
@@ -208,20 +272,106 @@ int atag_arm_load(struct kexec_info *info, unsigned long base,
 	return 0;
 }
 
+#define DTB_MAGIC               0xedfe0dd0
+#define DTB_OFFSET              0x2C
+#define DTB_PAD_SIZE            4096
+
+static int get_appended_dtb(const char *kernel, off_t kernel_len, char **dtb_img, off_t *dtb_img_len)
+{
+	uint32_t app_dtb_offset = 0;
+	char *kernel_end = (char*)kernel + kernel_len;
+	char *dtb;
+
+	memcpy((void*) &app_dtb_offset, (void*) (kernel + DTB_OFFSET), sizeof(uint32_t));
+
+	dtb = (char*)kernel + app_dtb_offset;
+	if(dtb >= kernel_end)
+	{
+		fprintf(stderr, "DTB: Failed to load dtb appended to zImage, invalid offset!");
+		return 0;
+	}
+
+	*dtb_img = dtb;
+	*dtb_img_len = kernel_end - dtb;
+	return 1;
+}
+
+static int load_dtb_image(const char *path, char **dtb_img, off_t *dtb_img_len)
+{
+	int fd;
+	struct stat info;
+	char buff[4];
+	char *img = NULL;
+	off_t size;
+
+	if(stat(path, &info) < 0)
+	{
+		fprintf(stderr, "DTB: Failed to stat() dtb image %s\n", path);
+		return 0;
+	}
+
+	if(info.st_size <= 2048)
+	{
+		fprintf(stderr, "DTB: invalid dtb image (too small) %s\n", path);
+		return 0;
+	}
+
+	fd = open(path, O_RDONLY);
+	if(fd < 0)
+	{
+		fprintf(stderr, "DTB: Failed to open dtb image %s\n", path);
+		return 0;
+	}
+
+	if(read(fd, buff, 4) != 4 || strncmp(buff, "QCDT", 4) != 0)
+	{
+		fprintf(stderr, "DTB: Invalid dtb image header in %s\n", path);
+		close(fd);
+		return 0;
+	}
+
+	// skip header
+	size = info.st_size - 2048;
+	lseek(fd, 2048, SEEK_SET);
+
+	img = xmalloc(size);
+	if(read(fd, img, size) != size)
+	{
+		fprintf(stderr, "Failed to read %lld bytes from dtb image %s\n", size, path);
+		free(img);
+		close(fd);
+		return 0;
+	}
+
+	*dtb_img = img;
+	*dtb_img_len = size;
+
+	close(fd);
+	return 1;
+}
+
 int zImage_arm_load(int argc, char **argv, const char *buf, off_t len,
 	struct kexec_info *info)
 {
 	unsigned long base;
 	unsigned int atag_offset = 0x1000; /* 4k offset from memory start */
 	unsigned int offset = 0x8000;      /* 32k offset from memory start */
+	unsigned int opt_ramdisk_addr;
+	unsigned int opt_atags_addr;
 	const char *command_line;
 	char *modified_cmdline = NULL;
 	off_t command_line_len;
 	const char *ramdisk;
 	char *ramdisk_buf;
-	off_t ramdisk_length;
-	off_t ramdisk_offset;
 	int opt;
+	char *endptr;
+	int use_dtb;
+	const char *dtb_file;
+	char *dtb_buf;
+	off_t dtb_length;
+	off_t dtb_offset;
+	struct arm_mach *mach;
+
 	/* See options.h -- add any more there, too. */
 	static const struct option options[] = {
 		KEXEC_ARCH_OPTIONS
@@ -229,9 +379,13 @@ int zImage_arm_load(int argc, char **argv, const char *buf, off_t len,
 		{ "append",		1, 0, OPT_APPEND },
 		{ "initrd",		1, 0, OPT_RAMDISK },
 		{ "ramdisk",		1, 0, OPT_RAMDISK },
+		{ "dtb",		2, 0, OPT_DTB },
+		{ "rd-addr",		1, 0, OPT_RD_ADDR },
+		{ "atags-addr",		1, 0, OPT_ATAGS_ADDR },
+		{ "boardname",  1, 0, OPT_BOARDNAME },
 		{ 0, 			0, 0, 0 },
 	};
-	static const char short_options[] = KEXEC_ARCH_OPT_STR "a:r:";
+	static const char short_options[] = KEXEC_ARCH_OPT_STR "a:r:d::i:g:b:";
 
 	/*
 	 * Parse the command line arguments
@@ -240,7 +394,11 @@ int zImage_arm_load(int argc, char **argv, const char *buf, off_t len,
 	command_line_len = 0;
 	ramdisk = 0;
 	ramdisk_buf = 0;
-	ramdisk_length = 0;
+	use_dtb = 0;
+	dtb_file = NULL;
+	opt_ramdisk_addr = 0;
+	opt_atags_addr = 0;
+	mach = NULL;
 	while((opt = getopt_long(argc, argv, short_options, options, 0)) != -1) {
 		switch(opt) {
 		default:
@@ -257,6 +415,39 @@ int zImage_arm_load(int argc, char **argv, const char *buf, off_t len,
 		case OPT_RAMDISK:
 			ramdisk = optarg;
 			break;
+		case OPT_DTB:
+			use_dtb = 1;
+			if(optarg)
+				dtb_file = optarg;
+			break;
+		case OPT_RD_ADDR:
+			opt_ramdisk_addr = strtoul(optarg, &endptr, 0);
+			if (*endptr) {
+				fprintf(stderr,
+					"Bad option value in --rd-addr=%s\n",
+					optarg);
+				usage();
+				return -1;
+			}
+			break;
+		case OPT_ATAGS_ADDR:
+			opt_atags_addr = strtoul(optarg, &endptr, 0);
+			if (*endptr) {
+				fprintf(stderr,
+					"Bad option value in --atag-addr=%s\n",
+					optarg);
+				usage();
+				return -1;
+			}
+			break;
+		case OPT_BOARDNAME:
+			mach = arm_mach_choose(optarg);
+			if(!mach)
+			{
+				fprintf(stderr, "Unknown boardname '%s'!\n", optarg);
+				return -1;
+			}
+			break;
 		}
 	}
 	if (command_line) {
@@ -265,7 +456,7 @@ int zImage_arm_load(int argc, char **argv, const char *buf, off_t len,
 			command_line_len = COMMAND_LINE_SIZE;
 	}
 	if (ramdisk) {
-		ramdisk_buf = slurp_file(ramdisk, &ramdisk_length);
+		ramdisk_buf = slurp_file(ramdisk, &initrd_size);
 	}
 
 	/*
@@ -315,12 +506,149 @@ int zImage_arm_load(int argc, char **argv, const char *buf, off_t len,
 	/* assume the maximum kernel compression ratio is 4,
 	 * and just to be safe, place ramdisk after that
 	 */
-	ramdisk_offset = base + len * 4;
+	if(opt_ramdisk_addr == 0)
+		initrd_base = _ALIGN(base + len * 4, getpagesize());
+	else
+		initrd_base = opt_ramdisk_addr;
 
-	if (atag_arm_load(info, base + atag_offset,
-			 command_line, command_line_len,
-			 ramdisk_buf, ramdisk_length, ramdisk_offset) == -1)
-		return -1;
+	if(!use_dtb)
+	{
+		if (atag_arm_load(info, base + atag_offset,
+				command_line, command_line_len,
+				ramdisk_buf, initrd_size, initrd_base) == -1)
+			return -1;
+	}
+	else
+	{
+		char *dtb_img = NULL;
+		off_t dtb_img_len = 0;
+		int free_dtb_img = 0;
+		int choose_res = 0;
+
+		if(!mach)
+		{
+			fprintf(stderr, "DTB: --boardname was not specified.\n");
+			return -1;
+		}
+
+		if(dtb_file)
+		{
+			if(!load_dtb_image(dtb_file, &dtb_img, &dtb_img_len))
+				return -1;
+
+			printf("DTB: Using DTB from file %s\n", dtb_file);
+			free_dtb_img = 1;
+		}
+		else
+		{
+			if(!get_appended_dtb(buf, len, &dtb_img, &dtb_img_len))
+				return -1;
+
+			printf("DTB: Using DTB appended to zImage\n");
+		}
+
+		choose_res = (mach->choose_dtb)(dtb_img, dtb_img_len, &dtb_buf, &dtb_length);
+
+		if(free_dtb_img)
+			free(dtb_img);
+
+		if(choose_res)
+		{
+			int ret, off;
+
+			dtb_length = fdt_totalsize(dtb_buf) + DTB_PAD_SIZE;
+			dtb_buf = xrealloc(dtb_buf, dtb_length);
+			ret = fdt_open_into(dtb_buf, dtb_buf, dtb_length);
+			if(ret)
+				die("DTB: fdt_open_into failed");
+
+			ret = (mach->add_extra_regs)(dtb_buf);
+			if (ret < 0)
+			{
+				fprintf(stderr, "DTB: error while adding mach-specific extra regs\n");
+				return -1;
+			}
+
+			if (command_line) {
+				const char *node_name = "/chosen";
+				const char *prop_name = "bootargs";
+
+				/* check if a /choosen subnode already exists */
+				off = fdt_path_offset(dtb_buf, node_name);
+
+				if (off == -FDT_ERR_NOTFOUND)
+					off = fdt_add_subnode(dtb_buf, off, node_name);
+
+				if (off < 0) {
+					fprintf(stderr, "DTB: Error adding %s node.\n", node_name);
+					return -1;
+				}
+
+				if (fdt_setprop(dtb_buf, off, prop_name,
+						command_line, strlen(command_line) + 1) != 0) {
+					fprintf(stderr, "DTB: Error setting %s/%s property.\n",
+						node_name, prop_name);
+					return -1;
+				}
+			}
+
+			if(ramdisk)
+			{
+				const char *node_name = "/chosen";
+				uint32_t initrd_start, initrd_end;
+
+				/* check if a /choosen subnode already exists */
+				off = fdt_path_offset(dtb_buf, node_name);
+
+				if (off == -FDT_ERR_NOTFOUND)
+					off = fdt_add_subnode(dtb_buf, off, node_name);
+
+				if (off < 0) {
+					fprintf(stderr, "DTB: Error adding %s node.\n", node_name);
+					return -1;
+				}
+
+				initrd_start = cpu_to_fdt32(initrd_base);
+				initrd_end = cpu_to_fdt32(initrd_base + initrd_size);
+
+				ret = fdt_setprop(dtb_buf, off, "linux,initrd-start", &initrd_start, sizeof(initrd_start));
+				if (ret)
+					die("DTB: Error setting %s/linux,initrd-start property.\n", node_name);
+
+				ret = fdt_setprop(dtb_buf, off, "linux,initrd-end", &initrd_end, sizeof(initrd_end));
+				if (ret)
+					die("DTB: Error setting %s/linux,initrd-end property.\n", node_name);
+			}
+
+			fdt_pack(dtb_buf);
+		}
+		else
+		{
+			/*
+			* Extract the DTB from /proc/device-tree.
+			*/
+			printf("DTB: Failed to load dtb from zImage or dtb.img, using /proc/device-tree. This is unlikely to work.\n");
+			create_flatten_tree(&dtb_buf, &dtb_length, command_line);
+		}
+
+		if(ramdisk)
+		{
+			add_segment(info, ramdisk_buf, initrd_size, initrd_base,
+				initrd_size);
+		}
+
+		if(opt_atags_addr != 0)
+			dtb_offset = opt_atags_addr;
+		else
+		{
+			dtb_offset = initrd_base + initrd_size + getpagesize();
+			dtb_offset = _ALIGN_DOWN(dtb_offset, getpagesize());
+		}
+
+		printf("DTB: add dtb segment 0x%x\n", (unsigned int)dtb_offset);
+		add_segment(info, dtb_buf, dtb_length,
+		            dtb_offset, dtb_length);
+	}
 
 	add_segment(info, buf, len, base + offset, len);
 

@@ -4,7 +4,14 @@
 #define OPT_ARCH_MAX   (OPT_MAX+0)
 
 #define OPT_APPEND	'a'
+#define OPT_BOARDNAME 'b'
 #define OPT_RAMDISK	'r'
+#define OPT_DTB	'd'
+#define OPT_RD_ADDR 'i'
+#define OPT_ATAGS_ADDR 'g'
+#define OPT_ATAGS 'f'
+#define OPT_IMAGE_SIZE 't'
+#define OPT_ATAGS_FILE 'w'
 
 /* Options relevant to the architecture (excluding loader-specific ones),
  * in this case none:
@@ -33,8 +40,17 @@
 	{ "command-line",	1, 0, OPT_APPEND },	\
 	{ "append",		1, 0, OPT_APPEND },	\
 	{ "initrd",		1, 0, OPT_RAMDISK },	\
-	{ "ramdisk",		1, 0, OPT_RAMDISK },
+	{ "ramdisk",		1, 0, OPT_RAMDISK }, \
+	{ "dtb",		2, 0, OPT_DTB }, \
+	{ "rd-addr",	1, 0, OPT_RD_ADDR }, \
+	{ "atags-addr",	1, 0, OPT_ATAGS_ADDR }, \
+	{ "boardname",  1, 0, OPT_BOARDNAME }, \
+	{ "atags",		0, 0, OPT_ATAGS },	\
+	{ "image-size",		1, 0, OPT_IMAGE_SIZE }, \
+	{ "atags-file",		1, 0, OPT_ATAGS_FILE }, \
 
-#define KEXEC_ALL_OPT_STR KEXEC_ARCH_OPT_STR "a:r:"
+#define KEXEC_ALL_OPT_STR KEXEC_ARCH_OPT_STR "a:b:r:s:d:i:g:f:t:w"
+
+extern unsigned int kexec_arm_image_size;
 
 #endif /* KEXEC_ARCH_ARM_OPTIONS_H */

@@ -26,8 +26,8 @@ int kexec_iomem_for_each_line(char *match,
 			      int (*callback)(void *data,
 					      int nr,
 					      char *str,
-					      unsigned long base,
-					      unsigned long length),
+					      unsigned long long base,
+					      unsigned long long length),
 			      void *data)
 {
 	const char *iomem = proc_iomem();
@@ -44,7 +44,7 @@ int kexec_iomem_for_each_line(char *match,
 		die("Cannot open %s\n", iomem);
 
 	while(fgets(line, sizeof(line), fp) != 0) {
-		count = sscanf(line, "%llx-%llx : %n", &start, &end, &consumed);
+		count = sscanf(line, "%Lx-%Lx : %n", &start, &end, &consumed);
 		if (count != 2)
 			continue;
 		str = line + consumed;
@@ -65,8 +65,8 @@ int kexec_iomem_for_each_line(char *match,
 
 static int kexec_iomem_single_callback(void *data, int nr,
 				       char *UNUSED(str),
-				       unsigned long base,
-				       unsigned long length)
+				       unsigned long long base,
+				       unsigned long long length)
 {
 	struct memory_range *range = data;
 

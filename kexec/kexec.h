@@ -57,6 +57,12 @@
 #error unknwon BYTE_ORDER
 #endif
 
+/*
+ * Document some of the reasons why crashdump may fail, so we can give
+ * better error messages
+ */
+#define EFAILED		-1	/* default error code */
+#define ENOCRASHKERNEL	-2	/* no memory reserved for crashkernel */
 
 /*
  * This function doesn't actually exist.  The idea is that when someone
@@ -94,7 +100,26 @@ do { \
 	} \
 } while(0)
 
+#define _ALIGN_UP_MASK(addr, mask)   (((addr) + (mask)) & ~(mask))
+#define _ALIGN_DOWN_MASK(addr, mask) ((addr) & ~(mask))
+
+/* align addr on a size boundary - adjust address up/down if needed */
+#define _ALIGN_UP(addr, size)	     \
+	_ALIGN_UP_MASK(addr, (typeof(addr))(size) - 1)
+#define _ALIGN_DOWN(addr, size)	     \
+	_ALIGN_DOWN_MASK(addr, (typeof(addr))(size) - 1)
+
+/* align addr on a size boundary - adjust address up if needed */
+#define _ALIGN(addr, size)     _ALIGN_UP(addr, size)
+
 extern unsigned long long mem_min, mem_max;
+extern int kexec_debug;
+
+#define dbgprintf(...) \
+do { \
+	if (kexec_debug) \
+		fprintf(stderr, __VA_ARGS__); \
+} while(0)
 
 struct kexec_segment {
 	const void *buf;
@@ -122,9 +147,18 @@ struct kexec_info {
 	struct mem_ehdr rhdr;
 	unsigned long backup_start;
 	unsigned long kexec_flags;
+	unsigned long backup_src_start;
+	unsigned long backup_src_size;
 	unsigned long kern_vaddr_start;
 	unsigned long kern_paddr_start;
 	unsigned long kern_size;
+	/* Set to 1 if we are using kexec file syscall */
+	unsigned long file_mode :1;
+
+	/* Filled by kernel image processing code */
+	int initrd_fd;
+	char *command_line;
+	int command_line_len;
 };
 
 struct arch_map_entry {
@@ -134,6 +168,10 @@ struct arch_map_entry {
 
 extern const struct arch_map_entry arches[];
 long physical_arch(void);
+
+#define KERNEL_VERSION(major, minor, patch) \
+	(((major) << 16) | ((minor) << 8) | patch)
+long kernel_version(void);
 
 void usage(void);
 int get_memory_ranges(struct memory_range **range, int *ranges,
@@ -172,6 +210,7 @@ extern int file_types;
 #define OPT_UNLOAD		'u'
 #define OPT_TYPE		't'
 #define OPT_PANIC		'p'
+#define OPT_KEXEC_FILE_SYSCALL	's'
 #define OPT_MEM_MIN             256
 #define OPT_MEM_MAX             257
 #define OPT_REUSE_INITRD	258
@@ -190,6 +229,8 @@ extern int file_types;
 	{ "exec",		0, 0, OPT_EXEC }, \
 	{ "load-preserve-context", 0, 0, OPT_LOAD_PRESERVE_CONTEXT}, \
 	{ "load-jump-back-helper", 0, 0, OPT_LOAD_JUMP_BACK_HELPER }, \
+	{ "load-panic",         0, 0, OPT_PANIC }, \
+	{ "no-ifdown",		0, 0, OPT_NOIFDOWN }, \
 	{ "entry",		1, 0, OPT_ENTRY }, \
 	{ "type",		1, 0, OPT_TYPE }, \
 	{ "load-panic",         0, 0, OPT_PANIC }, \
@@ -197,14 +238,18 @@ extern int file_types;
 	{ "mem-max",		1, 0, OPT_MEM_MAX }, \
 	{ "reuseinitrd",	0, 0, OPT_REUSE_INITRD }, \
 	{ "load-hardboot",	0, 0, OPT_LOAD_HARDBOOT}, \
+	{ "kexec-file-syscall",	0, 0, OPT_KEXEC_FILE_SYSCALL }, \
+	{ "debug",		0, 0, OPT_DEBUG }, \
 
-#define KEXEC_OPT_STR "hvdfxluet:p"
+#define KEXEC_OPT_STR "h?vdfxluet:ps"
 
-extern void die(char *fmt, ...);
+extern void dbgprint_mem_range(const char *prefix, struct memory_range *mr, int nr_mr);
+extern void die(const char *fmt, ...)
+	__attribute__ ((format (printf, 1, 2)));
 extern void *xmalloc(size_t size);
 extern void *xrealloc(void *ptr, size_t size);
 extern char *slurp_file(const char *filename, off_t *r_size);
-extern char *slurp_file_len(const char *filename, off_t size);
+extern char *slurp_file_len(const char *filename, off_t size, off_t *nread);
 extern char *slurp_decompress_file(const char *filename, off_t *r_size);
 extern unsigned long virt_to_phys(unsigned long addr);
 extern void add_segment(struct kexec_info *info,
@@ -239,14 +284,15 @@ int arch_process_options(int argc, char **argv);
 int arch_compat_trampoline(struct kexec_info *info);
 void arch_update_purgatory(struct kexec_info *info);
 int is_crashkernel_mem_reserved(void);
+int get_max_crash_kernel_limit(uint64_t *start, uint64_t *end);
 char *get_command_line(void);
 
 int kexec_iomem_for_each_line(char *match,
 			      int (*callback)(void *data,
 					      int nr,
 					      char *str,
-					      unsigned long base,
-					      unsigned long length),
+					      unsigned long long base,
+					      unsigned long long length),
 			      void *data);
 int parse_iomem_single(char *str, uint64_t *start, uint64_t *end);
 const char * proc_iomem(void);
@@ -259,13 +305,11 @@ extern int add_backup_segments(struct kexec_info *info,
 
 #define MAX_LINE	160
 
-#ifdef DEBUG
-#define dbgprintf(_args...) do {printf(_args);} while(0)
-#else
-static inline int __attribute__ ((format (printf, 1, 2)))
-	dbgprintf(const char *UNUSED(fmt), ...) {return 0;}
-#endif
-
 char *concat_cmdline(const char *base, const char *append);
+
+int xen_present(void);
+int xen_kexec_load(struct kexec_info *info);
+int xen_kexec_unload(uint64_t kexec_flags);
+void xen_kexec_exec(void);
 
 #endif /* KEXEC_H */
