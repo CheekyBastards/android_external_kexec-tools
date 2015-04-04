@@ -23,7 +23,6 @@ LOCAL_SRC_FILES               := kexec.c ifdown.c kexec-elf.c \
                                  arch/arm/kexec-uImage-arm.c \
                                  arch/arm/kexec-arm.c \
                                  arch/arm/crashdump-arm.c kexec-uImage.c \
-                                 purgatory.c
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 LOCAL_STATIC_LIBRARIES        := libktutil libz libc
 include $(BUILD_EXECUTABLE)

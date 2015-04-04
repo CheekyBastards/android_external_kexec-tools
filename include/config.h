@@ -11,7 +11,7 @@
 /* #undef HAVE_LIBXENCTRL */
 
 /* Define to 1 if you have the `z' library (-lz). */
-#define HAVE_LIBZ 1
+/* #undef HAVE_LIBZ */
 
 /* Define to 1 if you have the <memory.h> header file. */
 #define HAVE_MEMORY_H 1
@@ -41,13 +41,13 @@
 #define PACKAGE_BUGREPORT ""
 
 /* Define to the release date of this package */
-#define PACKAGE_DATE "01 April 2015"
+#define PACKAGE_DATE "03 April 2015"
 
 /* Define to the full name of this package. */
 #define PACKAGE_NAME "kexec-tools"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "kexec-tools 2.0.8"
+#define PACKAGE_STRING "kexec-tools 2.0.2"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "kexec-tools"
@@ -56,7 +56,10 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "2.0.8"
+#define PACKAGE_VERSION "2.0.2"
+
+/* Define to compile with old toolchains */
+/* #undef PPC_OLDTOOLCHAIN */
 
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1

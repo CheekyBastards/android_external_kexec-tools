@@ -16,6 +16,23 @@ LOCAL_C_INCLUDES  := $(LOCAL_PATH)/util_lib/include
 LOCAL_SRC_FILES   := util_lib/compute_ip_checksum.c util_lib/sha256.c
 include $(BUILD_STATIC_LIBRARY)
 
+
+#
+# sha256.c needs to be compiled without optimization, else
+# purgatory fails to execute on ia64.
+#
+include $(CLEAR_VARS)
+
+LOCAL_CFLAGS := -O0 -pipe -fno-strict-aliasing -Wall -Wstrict-prototypes \
+				-I$(LOCAL_PATH)/../util_lib/include
+
+LOCAL_SRC_FILES := ../util_lib/sha256.c
+
+LOCAL_MODULE:= libsha-kexec
+LOCAL_MODULE_TAGS := eng
+#LOCAL_REQUIRED_MODULES := libc_bionic
+
+include $(BUILD_STATIC_LIBRARY)
 include $(CLEAR_VARS)
 LOCAL_MODULE                  := kexec
 LOCAL_MODULE_TAGS             := optional
@@ -25,8 +42,8 @@ LOCAL_C_INCLUDES              := $(LOCAL_PATH)/include \
                                  $(LOCAL_PATH)/kexec/libfdt\
                                  external/zlib
 LOCAL_SRC_FILES               := kexec/kexec.c \
-				 kexec/kexec-dev.c \
-				 kexec/ifdown.c \
+				 	   kexec/kexec-dev.c \
+                                 kexec/ifdown.c \
                                  kexec/kexec-elf.c \
                                  kexec/kexec-elf-exec.c \
                                  kexec/kexec-elf-core.c \
@@ -37,7 +54,7 @@ LOCAL_SRC_FILES               := kexec/kexec.c \
                                  kexec/crashdump.c \
                                  kexec/crashdump-xen.c \
                                  kexec/kernel_version.c \
-			         kexec/kexec-xen.c \
+			               kexec/kexec-xen.c \
                                  kexec/phys_arch.c \
                                  kexec/lzma.c \
                                  kexec/zlib.c \
@@ -56,11 +73,14 @@ LOCAL_SRC_FILES               := kexec/kexec.c \
                                  kexec/arch/arm/mach-hammerhead.c \
                                  kexec/arch/arm/mach-shamu.c \
                                  kexec/arch/arm/crashdump-arm.c \
-                                 kexec/kexec-uImage.c kexec/purgatory.c \
+                                 kexec/kexec-uImage.c \
                                  kexec/fs2dt.c \
-                                 kexec/libfdt/fdt.c kexec/libfdt/fdt_ro.c \
-                                 kexec/libfdt/fdt_rw.c kexec/libfdt/fdt_strerror.c \
-                                 kexec/libfdt/fdt_sw.c kexec/libfdt/fdt_wip.c
+                                 kexec/libfdt/fdt.c \
+                                 kexec/libfdt/fdt_ro.c \
+                                 kexec/libfdt/fdt_rw.c \
+                                 kexec/libfdt/fdt_strerror.c \
+                                 kexec/libfdt/fdt_sw.c \
+                                 kexec/libfdt/fdt_wip.c
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 LOCAL_STATIC_LIBRARIES        := libutil libz libc
 LOCAL_LDLIBS           := -lz

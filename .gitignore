@@ -12,6 +12,8 @@ Makefile
 autom4te.cache/
 bin/
 build/
+libs/
+obj/
 config.log
 config.status
 configure

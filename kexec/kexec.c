@@ -914,11 +914,6 @@ void usage(void)
 	       " -l, --load           Load the new kernel into the\n"
 	       "                      current kernel.\n"
 	       " -s, --kexec-file-syscall Use file based syscall for kexec operation\n"
-	       "     --load-preserve-context Load the new kernel and preserve\n"
-	       "                      context of current kernel during kexec.\n"
-	       "     --load-jump-back-helper Load a helper image to jump back\n"
-	       "                      to original kernel.\n"
-	       "     --load-hardboot  Load the new kernel and hard boot it.\n"
 	       " -p, --load-panic     Load the new kernel for use on panic.\n"
 	       " -u, --unload         Unload the current kexec target kernel.\n"
 	       "                      If capture kernel is being unloaded\n"
@@ -954,15 +949,16 @@ void usage(void)
 
 static int kexec_loaded(void)
 {
-#if 0
+
 	long ret = -1;
 	FILE *fp;
 	char *p;
 	char line[3];
-
+#if 0
 	/* No way to tell if an image is loaded under Xen, assume it is. */
 	if (xen_present())
 		return 1;
+#endif
 
 	fp = fopen("/sys/kernel/kexec_loaded", "r");
 	if (fp == NULL)
@@ -972,8 +968,8 @@ static int kexec_loaded(void)
 	fclose(fp);
 
 	if (p == NULL)
-		return -1;
-
+		return dev_kexec_check_loaded();
+#if 0
 	ret = strtol(line, &p, 10);
 
 	/* Too long */
@@ -985,8 +981,8 @@ static int kexec_loaded(void)
 		return -1;
 
 	return (int)ret;
+
 #endif
-	return dev_kexec_check_loaded();
 }
 
 /*
